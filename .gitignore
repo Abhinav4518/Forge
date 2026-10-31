@@ -1,0 +1,28 @@
+# Node.js / Next.js Frontend
+node_modules/
+.next/
+out/
+build/
+npm-debug.log
+yarn-error.log
+
+# Python / FastAPI Backend
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.pytest_cache/
+
+# Environment Variables (NEVER COMMIT API KEYS)
+.env
+.env.local
+
+# Databases (Don't commit citizen logs!)
+jansetu_audit.db
+*.sqlite3
+*.db
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
