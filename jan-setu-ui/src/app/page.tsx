@@ -247,12 +247,12 @@ export default function JanSetuCivicPortal() {
   const [sharePublicly, setSharePublicly] = useState(true);
 
   const [citizenProfile, setCitizenProfile] = useState({
-    name: "Abhinav Kumar Jha",
-    email: "abhinavips1125@gmail.com",
-    mobile: "8287244296",
-    address: "A-1/2, 1st Floor, Shiv Mandir, Mandawali, Delhi",
-    pincode: "110092",
-    state: "East Delhi, Delhi",
+    name: "",
+    email: "",
+    mobile: "",
+    address: "",
+    pincode: "",
+    state: "",
     bpl: "No",
     bplCardNo: "",
     bplYear: "",
