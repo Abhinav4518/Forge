@@ -5,7 +5,6 @@ import base64
 import sqlite3
 import asyncio
 import urllib.parse
-import re
 from datetime import datetime, timedelta
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Query
@@ -15,11 +14,13 @@ from groq import AsyncGroq
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Safe PIL import for Fact-Check EXIF extraction (no crashes if missing)
+# Safe PIL import for Fact-Check EXIF extraction
 try:
-    from PIL import Image, ExifTags
+    from PIL import Image, ExifTags  # type: ignore
     HAS_PIL = True
 except ImportError:
+    Image = None
+    ExifTags = None
     HAS_PIL = False
 
 load_dotenv()
@@ -104,6 +105,10 @@ async def get_working_groq_model() -> str:
         pass
     return "openai/gpt-oss-20b"
 
+@app.get("/")
+async def root_health():
+    return {"status": "online", "service": "Jan-Setu Sovereign Civic Suite Backend"}
+
 # --- PHONE-ISOLATED PRIVATE VAULT ---
 @app.get("/api/ledger")
 async def get_private_user_ledger(mobile: str = Query(..., description="10-digit Citizen Mobile Number")):
@@ -150,7 +155,7 @@ async def transcribe_voice(file: UploadFile = File(...)):
     )
     return {"text": transcription.text}
 
-# --- CHECKBOX 1: MULTILINGUAL POLICY & RIGHTS EXPLAINER ---
+# --- MODULE 1: MULTILINGUAL POLICY & RIGHTS EXPLAINER ---
 class PolicyExplainRequest(BaseModel):
     policy_text: str
     lang: str = "hi"
@@ -186,7 +191,7 @@ async def explain_policy(req: PolicyExplainRequest):
     )
     return json.loads(response.choices[0].message.content)
 
-# --- CHECKBOX 2: TEXT/AUDIO CIVIC GRIEVANCE & SEVERITY TRIAGE ENGINE ---
+# --- MODULE 2: TEXT/AUDIO CIVIC GRIEVANCE & SEVERITY TRIAGE ENGINE ---
 class GrievanceTriageRequest(BaseModel):
     grievance_text: str
     location: str = "India"
@@ -224,7 +229,7 @@ async def triage_civic_grievance(req: GrievanceTriageRequest):
     )
     return json.loads(response.choices[0].message.content)
 
-# --- CHECKBOX 4: FACT-VERIFICATION & DEEPFAKE AUDIT ENGINE ---
+# --- MODULE 4: FACT-VERIFICATION & DEEPFAKE AUDIT ENGINE ---
 @app.post("/api/fact-check")
 async def audit_claim_and_media(
     claim_text: str = Form(""),
@@ -256,7 +261,7 @@ async def audit_claim_and_media(
                 else:
                     forensic_report["exif_status"] = "EXIF Stripped (Typical of WhatsApp Forward or AI Generator)"
             else:
-                forensic_report["exif_status"] = "Binary header inspected (PIL not installed)"
+                forensic_report["exif_status"] = "Binary header inspected"
         except Exception:
             forensic_report["exif_status"] = "Binary stream inspected"
 
@@ -372,7 +377,7 @@ async def draft_rti_content(user_query: str, citizen_profile: dict, lang: str = 
     )
     return json.loads(response.choices[0].message.content)
 
-# --- CHECKBOX 3: AUTONOMOUS PLAYWRIGHT RTI EXECUTION ENGINE ---
+# --- MODULE 3: AUTONOMOUS PLAYWRIGHT RTI EXECUTION ENGINE ---
 @app.websocket("/ws/agent")
 async def agent_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -414,8 +419,12 @@ async def agent_endpoint(websocket: WebSocket):
         await send_telemetry("node_2", "running", "Connecting to Official Government RTI Portal (rtionline.gov.in)...")
         
         async with async_playwright() as p:
-            # Removed focus stealing: start-minimized or headless background
-            browser = await p.chromium.launch(headless=False, slow_mo=250, args=["--start-minimized"])
+            # Headless background execution so it works on Render cloud AND never steals window focus locally
+            browser = await p.chromium.launch(
+                headless=True,
+                slow_mo=150,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--window-size=1280,900"]
+            )
             context = await browser.new_context(viewport={"width": 1280, "height": 900})
             page = await context.new_page()
 
@@ -593,7 +602,7 @@ async def agent_endpoint(websocket: WebSocket):
             conn.commit()
             conn.close()
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             await browser.close()
 
     except WebSocketDisconnect:

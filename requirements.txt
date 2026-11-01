@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+playwright
+groq
+websockets
+python-dotenv
+python-multipart
+pydantic
+pillow
+httpx

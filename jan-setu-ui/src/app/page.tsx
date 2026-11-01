@@ -2,11 +2,14 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import {
-  Scale, FileText, Send, CheckCircle2, Clock, AlertCircle, ShieldCheck, Building2, UserCheck,
+  Scale, FileText, Send, CheckCircle2, Clock, AlertCircle, Building2, UserCheck,
   Eye, Sparkles, Lock, ArrowRight, RefreshCw, Mic, Square, Printer, BadgeCheck,
   Languages, Code2, MapPin, Phone, Mail, Home, User, Award, Globe, Gavel, Flame,
   Volume2, VolumeX, BookOpen, ShieldAlert, SearchCheck
 } from "lucide-react";
+
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+const WS_BASE = API_BASE.replace(/^http/, "ws");
 
 type LangCode = "en" | "hi" | "bn" | "ta" | "te";
 
@@ -272,11 +275,11 @@ export default function JanSetuCivicPortal() {
   const [policyExplainer, setPolicyExplainer] = useState<any>(null);
   const [explainingPolicy, setExplainingPolicy] = useState(false);
 
-  // Checkbox 2: Civic Triage State (Text/Audio Based)
+  // Module 2: Civic Triage State
   const [triageResult, setTriageResult] = useState<any>(null);
   const [isTriaging, setIsTriaging] = useState(false);
 
-  // Checkbox 4: Fact-Check Audit State
+  // Module 4: Fact-Check Audit State
   const [factAuditResult, setFactAuditResult] = useState<any>(null);
   const [auditingFact, setAuditingFact] = useState(false);
   const [factMediaFile, setFactMediaFile] = useState<File | null>(null);
@@ -306,7 +309,7 @@ export default function JanSetuCivicPortal() {
       return;
     }
     try {
-      const res = await fetch(`http://localhost:8000/api/ledger?mobile=${encodeURIComponent(cleaned)}`);
+      const res = await fetch(`${API_BASE}/api/ledger?mobile=${encodeURIComponent(cleaned)}`);
       if (res.ok) {
         const data = await res.json();
         setMyPrivateFilings(data.records || []);
@@ -318,7 +321,7 @@ export default function JanSetuCivicPortal() {
 
   const fetchPublicPulse = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/public-pulse");
+      const res = await fetch(`${API_BASE}/api/public-pulse`);
       if (res.ok) {
         const data = await res.json();
         setPublicPulseFilings(data.public_records || []);
@@ -356,7 +359,7 @@ export default function JanSetuCivicPortal() {
     setExplainingPolicy(true);
     setActiveTab("explainer");
     try {
-      const res = await fetch("http://localhost:8000/api/explain-policy", {
+      const res = await fetch(`${API_BASE}/api/explain-policy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -379,7 +382,7 @@ export default function JanSetuCivicPortal() {
     if (!query.trim()) return;
     setIsTriaging(true);
     try {
-      const res = await fetch("http://localhost:8000/api/triage", {
+      const res = await fetch(`${API_BASE}/api/triage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -409,7 +412,7 @@ export default function JanSetuCivicPortal() {
     }
 
     try {
-      const res = await fetch("http://localhost:8000/api/fact-check", {
+      const res = await fetch(`${API_BASE}/api/fact-check`, {
         method: "POST",
         body: formData,
       });
@@ -466,7 +469,7 @@ export default function JanSetuCivicPortal() {
         const formData = new FormData();
         formData.append("file", audioBlob, "grievance.webm");
         try {
-          const res = await fetch("http://localhost:8000/api/transcribe", { method: "POST", body: formData });
+          const res = await fetch(`${API_BASE}/api/transcribe`, { method: "POST", body: formData });
           const data = await res.json();
           if (data.text) setQuery(data.text);
         } catch {
@@ -486,7 +489,7 @@ export default function JanSetuCivicPortal() {
     setGeneratingAppeal(true);
     setAppealDraft(null);
     try {
-      const res = await fetch("http://localhost:8000/api/appeal", {
+      const res = await fetch(`${API_BASE}/api/appeal`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -525,7 +528,7 @@ export default function JanSetuCivicPortal() {
     setLogs([]);
     setStepStatuses({});
 
-    const ws = new WebSocket("ws://localhost:8000/ws/agent");
+    const ws = new WebSocket(`${WS_BASE}/ws/agent`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -534,7 +537,7 @@ export default function JanSetuCivicPortal() {
         query,
         lang,
         profile: { ...citizenProfile, mobile: cleanMobile },
-        severity_score: triageResult?.severity_level || "STANDARD",
+        severity_score: triageResult?.severity_badge || "STANDARD",
         submit_to_gateway: true,
         share_publicly: sharePublicly,
       }));
@@ -759,7 +762,6 @@ export default function JanSetuCivicPortal() {
                 ))}
               </div>
 
-              {/* CHECKBOX 2: TEXT/AUDIO CIVIC TRIAGE */}
               <div className="mb-2.5">
                 <button type="button" onClick={handleRunTriage} disabled={isTriaging} className="w-full py-2 px-3 rounded-lg border-2 border-[#0F2547] bg-[#EFECE4] hover:bg-[#0F2547] hover:text-white text-[#0F2547] font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition">
                   <ShieldAlert className="w-4 h-4 text-[#D97706]" />
@@ -1090,7 +1092,6 @@ export default function JanSetuCivicPortal() {
         </section>
       </main>
 
-      {/* SECTION 19(1) APPEAL MODAL */}
       {appealModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-[#FAF8F5] rounded-xl max-w-2xl w-full p-6 shadow-2xl border-2 border-[#0F2547]">
