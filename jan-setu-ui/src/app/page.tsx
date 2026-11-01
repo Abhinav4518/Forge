@@ -5,7 +5,7 @@ import {
   Scale, FileText, Send, CheckCircle2, Clock, AlertCircle, Building2, UserCheck,
   Eye, Sparkles, Lock, ArrowRight, RefreshCw, Mic, Square, Printer, BadgeCheck,
   Languages, Code2, MapPin, Phone, Mail, Home, User, Award, Globe, Gavel, Flame,
-  Volume2, VolumeX, BookOpen, ShieldAlert, SearchCheck, ExternalLink, Copy
+  Volume2, VolumeX, BookOpen, ShieldAlert, SearchCheck, ExternalLink
 } from "lucide-react";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -248,12 +248,12 @@ export default function JanSetuCivicPortal() {
   const [sharePublicly, setSharePublicly] = useState(true);
 
   const [citizenProfile, setCitizenProfile] = useState({
-    name: "",
-    email: "",
-    mobile: "",
-    address: "",
-    pincode: "",
-    state: "",
+    name: "Abhinav Kumar Jha",
+    email: "abhinavips1125@gmail.com",
+    mobile: "8287244296",
+    address: "A-1/2, 1st Floor, Shiv Mandir, Mandawali, Delhi",
+    pincode: "110092",
+    state: "East Delhi, Delhi",
     bpl: "No",
     bplCardNo: "",
     bplYear: "",
@@ -264,10 +264,12 @@ export default function JanSetuCivicPortal() {
   const cleanMobile = citizenProfile.mobile.replace(/\D/g, "").slice(-10);
   const hasValidMobile = cleanMobile.length === 10;
 
-  // Voice & Neural Indian TTS State
+  // Voice & Neural Indian TTS State (with synchronous ref + abort controller so Stop Audio works 100% of the time)
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const isSpeakingRef = useRef<boolean>(false);
+  const ttsAbortRef = useRef<AbortController | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
@@ -305,7 +307,6 @@ export default function JanSetuCivicPortal() {
 
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Helper with strict timeout so buttons NEVER spin forever on Render cold-starts
   const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 18000) => {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -316,21 +317,49 @@ export default function JanSetuCivicPortal() {
     }
   };
 
+  // Reads cached filings for this mobile number so Render container restarts never wipe the user's vault
+  const getLocalVaultRecords = (mobileNum: string): any[] => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(`jansetu_vault_${mobileNum}`);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveToLocalVault = (mobileNum: string, record: any) => {
+    if (typeof window === "undefined" || !record) return;
+    try {
+      const existing = getLocalVaultRecords(mobileNum);
+      const filtered = existing.filter((r: any) => r.receipt_id !== record.receipt_id);
+      const updated = [record, ...filtered].slice(0, 25);
+      localStorage.setItem(`jansetu_vault_${mobileNum}`, JSON.stringify(updated));
+    } catch {}
+  };
+
   const fetchPrivateVault = async (mobileNum: string) => {
     const cleaned = mobileNum.replace(/\D/g, "").slice(-10);
     if (cleaned.length < 10) {
       setMyPrivateFilings([]);
       return;
     }
+    const localRecs = getLocalVaultRecords(cleaned);
     try {
       const res = await fetchWithTimeout(`${API_BASE}/api/ledger?mobile=${encodeURIComponent(cleaned)}`, {}, 10000);
       if (res.ok) {
         const data = await res.json();
-        setMyPrivateFilings(data.records || []);
+        const serverRecs: any[] = data.records || [];
+        // Merge server SQLite records + local vault records by receipt_id so count is never 0 after filing
+        const map = new Map<string, any>();
+        [...serverRecs, ...localRecs].forEach((r) => {
+          if (r && r.receipt_id) map.set(r.receipt_id, r);
+        });
+        setMyPrivateFilings(Array.from(map.values()));
+        return;
       }
-    } catch {
-      setMyPrivateFilings([]);
-    }
+    } catch {}
+    setMyPrivateFilings(localRecs);
   };
 
   const fetchPublicPulse = async () => {
@@ -351,50 +380,75 @@ export default function JanSetuCivicPortal() {
     fetchPublicPulse();
   }, []);
 
-  // Natural Indian Neural Speech via Backend (/api/tts)
-  const speakText = async (textToSpeak: string, targetLangCode?: LangCode) => {
-    if (isSpeaking) {
-      if (audioPlayerRef.current) {
+  // GUARANTEED INSTANT AUDIO STOPPER
+  const stopAudio = () => {
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+    if (ttsAbortRef.current) {
+      ttsAbortRef.current.abort();
+      ttsAbortRef.current = null;
+    }
+    if (audioPlayerRef.current) {
+      try {
         audioPlayerRef.current.pause();
-        audioPlayerRef.current = null;
-      }
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
-      setIsSpeaking(false);
+        audioPlayerRef.current.currentTime = 0;
+        audioPlayerRef.current.src = "";
+      } catch {}
+      audioPlayerRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+  };
+
+  // Natural Indian Neural Speech via Backend (/api/tts) with Instant Abort Support
+  const speakText = async (textToSpeak: string, targetLangCode?: LangCode) => {
+    if (isSpeakingRef.current || isSpeaking) {
+      stopAudio();
       return;
     }
 
+    stopAudio();
+    isSpeakingRef.current = true;
     setIsSpeaking(true);
+
+    const abortController = new AbortController();
+    ttsAbortRef.current = abortController;
     const voiceLang = targetLangCode || lang;
 
     try {
-      const res = await fetchWithTimeout(
-        `${API_BASE}/api/tts`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: textToSpeak, lang: voiceLang }),
-        },
-        15000
-      );
-      if (!res.ok) throw new Error("TTS failed");
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: textToSpeak, lang: voiceLang }),
+        signal: abortController.signal,
+      });
+      if (!res.ok || !isSpeakingRef.current) {
+        stopAudio();
+        return;
+      }
       const blob = await res.blob();
+      if (!isSpeakingRef.current) {
+        stopAudio();
+        return;
+      }
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
       audioPlayerRef.current = audio;
       audio.onended = () => {
+        isSpeakingRef.current = false;
         setIsSpeaking(false);
         URL.revokeObjectURL(audioUrl);
       };
-      audio.onerror = () => setIsSpeaking(false);
+      audio.onerror = () => {
+        stopAudio();
+      };
       await audio.play();
     } catch {
-      setIsSpeaking(false);
+      stopAudio();
     }
   };
 
-  // Clickable Live Portal Hand-off: Copies RTI Draft & Opens Official rtionline.gov.in
   const openLiveRtiPortalManually = () => {
     if (rtiData?.formal_draft && typeof navigator !== "undefined" && navigator.clipboard) {
       navigator.clipboard.writeText(rtiData.formal_draft);
@@ -587,6 +641,8 @@ export default function JanSetuCivicPortal() {
     const ws = new WebSocket(`${WS_BASE}/ws/agent`);
     wsRef.current = ws;
 
+    const sessionLogsAccum: string[] = [];
+
     ws.onopen = () => {
       addLog(`Session bound to Mobile ID [+91-${cleanMobile}].`, "running");
       ws.send(JSON.stringify({
@@ -603,17 +659,48 @@ export default function JanSetuCivicPortal() {
       const msg = JSON.parse(event.data);
       const { step_id, status, log, payload } = msg;
 
-      if (log) addLog(log, status);
+      if (log) {
+        addLog(log, status);
+        sessionLogsAccum.push(`[${new Date().toLocaleTimeString("en-IN", { hour12: false })}] ${log}`);
+      }
       if (step_id) setStepStatuses(prev => ({ ...prev, [step_id]: status }));
 
-      if (payload?.rti_data) { setRtiData(payload.rti_data); setActiveTab("document"); }
+      if (payload?.rti_data) {
+        setRtiData(payload.rti_data);
+        setActiveTab("document");
+      }
       if (payload?.browser_snapshot) setBrowserSnapshot(payload.browser_snapshot);
       if (payload?.captcha_image) setCaptchaImage(payload.captcha_image);
+
       if (payload?.receipt_id) {
         setReceiptId(payload.receipt_id);
         setIsRunning(false);
-        fetchPrivateVault(cleanMobile);
-        fetchPublicPulse();
+
+        // Immediately construct and persist the record in the Citizen's Phone Vault
+        const fallbackRecord = payload.saved_record || {
+          id: Date.now(),
+          receipt_id: payload.receipt_id,
+          applicant_name: citizenProfile.name,
+          applicant_mobile: cleanMobile,
+          applicant_email: citizenProfile.email,
+          state: citizenProfile.state,
+          ministry: payload?.rti_data?.department_predicted || "Public Authority",
+          grievance_summary: query.slice(0, 180),
+          formal_draft: payload?.rti_data?.formal_draft || query,
+          execution_logs: sessionLogsAccum.join("\n"),
+          severity_score: triageResult?.severity_badge || "STANDARD",
+          status: citizenProfile.bpl === "Yes" ? "EXEMPT (BPL SEC 7-5)" : "STAGED FOR PORTAL SUBMISSION",
+          is_public: sharePublicly ? 1 : 0,
+          created_at: new Date().toLocaleString("en-IN"),
+          sla_deadline: citizenProfile.life_liberty ? "48 Hours" : "30 Days",
+        };
+
+        saveToLocalVault(cleanMobile, fallbackRecord);
+        setMyPrivateFilings(prev => [fallbackRecord, ...prev.filter(r => r.receipt_id !== fallbackRecord.receipt_id)]);
+        setTimeout(() => {
+          fetchPrivateVault(cleanMobile);
+          fetchPublicPulse();
+        }, 400);
       }
       if (status === "error") setIsRunning(false);
     };
@@ -663,7 +750,7 @@ export default function JanSetuCivicPortal() {
                 <button
                   key={l.code}
                   type="button"
-                  onClick={() => setLang(l.code)}
+                  onClick={() => { stopAudio(); setLang(l.code); }}
                   className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
                     lang === l.code
                       ? "bg-[#FF9933] text-slate-950 shadow-xs"
@@ -960,19 +1047,28 @@ export default function JanSetuCivicPortal() {
                       {rtiData.citizen_summary_hindi && (
                         <div className="flex flex-wrap items-center justify-between gap-2 bg-[#FFF8E7] border border-[#F59E0B]/40 px-3 py-2 rounded-lg print:hidden">
                           <div className="flex gap-1.5">
-                            <button onClick={() => setDocLang("english")} className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer ${docLang === "english" ? "bg-[#0F2547] text-white" : "bg-white text-[#0F2547] border border-[#C8C1B2]"}`}>Official English</button>
-                            <button onClick={() => setDocLang("native")} className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer ${docLang === "native" ? "bg-[#0F2547] text-white" : "bg-white text-[#0F2547] border border-[#C8C1B2]"}`}>
+                            <button onClick={() => { stopAudio(); setDocLang("english"); }} className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer ${docLang === "english" ? "bg-[#0F2547] text-white" : "bg-white text-[#0F2547] border border-[#C8C1B2]"}`}>Official English</button>
+                            <button onClick={() => { stopAudio(); setDocLang("native"); }} className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer ${docLang === "native" ? "bg-[#0F2547] text-white" : "bg-white text-[#0F2547] border border-[#C8C1B2]"}`}>
                               {LANGUAGES.find(l => l.code === lang)?.native} Summary
                             </button>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => speakText(docLang === "english" ? rtiData.formal_draft : rtiData.citizen_summary_hindi, docLang === "english" ? "en" : lang)}
-                            className="bg-[#D97706] hover:bg-amber-700 text-white px-2.5 py-1 rounded text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                          >
-                            {isSpeaking ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                            {isSpeaking ? t.stopVoiceBtn : t.listenBtn}
-                          </button>
+                          {isSpeaking ? (
+                            <button
+                              type="button"
+                              onClick={stopAudio}
+                              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-[11px] font-bold flex items-center gap-1 cursor-pointer animate-pulse"
+                            >
+                              <VolumeX className="w-3.5 h-3.5" /> {t.stopVoiceBtn}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => speakText(docLang === "english" ? rtiData.formal_draft : rtiData.citizen_summary_hindi, docLang === "english" ? "en" : lang)}
+                              className="bg-[#D97706] hover:bg-amber-700 text-white px-2.5 py-1 rounded text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                            >
+                              <Volume2 className="w-3.5 h-3.5" /> {t.listenBtn}
+                            </button>
+                          )}
                         </div>
                       )}
 
@@ -1013,10 +1109,15 @@ export default function JanSetuCivicPortal() {
                           <div className="text-[10px] uppercase text-[#FF9933] font-bold">Multilingual Rights & Scheme Explainer ({LANGUAGES.find(l => l.code === lang)?.native})</div>
                           <div className="text-sm font-bold mt-0.5">{policyExplainer.scheme_or_law_title}</div>
                         </div>
-                        <button type="button" onClick={() => speakText(`${policyExplainer.plain_explainer}. ${(policyExplainer.exact_rights || []).join(". ")}`, lang)} className="bg-[#FF9933] hover:bg-amber-400 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0">
-                          {isSpeaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                          {isSpeaking ? t.stopVoiceBtn : t.listenBtn}
-                        </button>
+                        {isSpeaking ? (
+                          <button type="button" onClick={stopAudio} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0 animate-pulse">
+                            <VolumeX className="w-4 h-4" /> {t.stopVoiceBtn}
+                          </button>
+                        ) : (
+                          <button type="button" onClick={() => speakText(`${policyExplainer.plain_explainer}. ${(policyExplainer.exact_rights || []).join(". ")}`, lang)} className="bg-[#FF9933] hover:bg-amber-400 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0">
+                            <Volume2 className="w-4 h-4" /> {t.listenBtn}
+                          </button>
+                        )}
                       </div>
                       <div className="bg-[#FFF8E7] border border-[#D97706]/40 rounded-lg p-3.5 text-xs leading-relaxed text-[#1E293B]">
                         <div className="font-bold text-[#78350F] uppercase text-[10px] mb-1">Plain-Language Voice Summary</div>
@@ -1095,7 +1196,6 @@ export default function JanSetuCivicPortal() {
                 </div>
               )}
 
-              {/* TAB 4: CLICKABLE LIVE PORTAL VIEW */}
               {activeTab === "browser" && (
                 <div className="space-y-3">
                   <div className="bg-[#0F2547] text-white p-3 rounded-lg flex flex-wrap items-center justify-between gap-2">
@@ -1154,7 +1254,7 @@ export default function JanSetuCivicPortal() {
                     <div className="p-8 text-center text-xs text-[#475569] border border-dashed border-[#C8C1B2] rounded-lg">No RTI filings recorded for <strong>+91-{cleanMobile}</strong> yet.</div>
                   ) : (
                     myPrivateFilings.map((rec) => (
-                      <div key={rec.id} className="border border-[#C8C1B2] rounded-lg p-3.5 bg-white space-y-2">
+                      <div key={rec.id || rec.receipt_id} className="border border-[#C8C1B2] rounded-lg p-3.5 bg-white space-y-2">
                         <div className="flex justify-between items-center">
                           <span className="font-mono text-xs font-bold text-[#0F2547]">{rec.receipt_id}</span>
                           <span className="text-[10px] font-bold bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded">{rec.status}</span>
