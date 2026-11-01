@@ -5,11 +5,12 @@ import {
   Scale, FileText, Send, CheckCircle2, Clock, AlertCircle, Building2, UserCheck,
   Eye, Sparkles, Lock, ArrowRight, RefreshCw, Mic, Square, Printer, BadgeCheck,
   Languages, Code2, MapPin, Phone, Mail, Home, User, Award, Globe, Gavel, Flame,
-  Volume2, VolumeX, BookOpen, ShieldAlert, SearchCheck
+  Volume2, VolumeX, BookOpen, ShieldAlert, SearchCheck, ExternalLink, Copy
 } from "lucide-react";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 const WS_BASE = API_BASE.replace(/^http/, "ws");
+const OFFICIAL_RTI_PORTAL_URL = "https://rtionline.gov.in/request/request.php";
 
 type LangCode = "en" | "hi" | "bn" | "ta" | "te";
 
@@ -58,7 +59,7 @@ const UI_TEXT: Record<LangCode, any> = {
     tabBrowser: "Portal View",
     tabVault: "My Phone Vault",
     tabPublic: "Public Triage Board",
-    listenBtn: "Listen in Voice",
+    listenBtn: "Listen (Indian Voice)",
     stopVoiceBtn: "Stop Audio",
   },
   hi: {
@@ -97,7 +98,7 @@ const UI_TEXT: Record<LangCode, any> = {
     tabBrowser: "पोर्टल दृश्य",
     tabVault: "मेरा मोबाइल वॉल्ट",
     tabPublic: "पब्लिक डैशबोर्ड",
-    listenBtn: "आवाज़ में सुनें",
+    listenBtn: "भारतीय आवाज़ में सुनें",
     stopVoiceBtn: "आवाज़ रोकें",
   },
   bn: {
@@ -247,12 +248,12 @@ export default function JanSetuCivicPortal() {
   const [sharePublicly, setSharePublicly] = useState(true);
 
   const [citizenProfile, setCitizenProfile] = useState({
-    name: "",
-    email: "",
-    mobile: "",
-    address: "",
-    pincode: "",
-    state: "",
+    name: "Abhinav Kumar Jha",
+    email: "abhinavips1125@gmail.com",
+    mobile: "8287244296",
+    address: "A-1/2, 1st Floor, Shiv Mandir, Mandawali, Delhi",
+    pincode: "110092",
+    state: "East Delhi, Delhi",
     bpl: "No",
     bplCardNo: "",
     bplYear: "",
@@ -263,12 +264,13 @@ export default function JanSetuCivicPortal() {
   const cleanMobile = citizenProfile.mobile.replace(/\D/g, "").slice(-10);
   const hasValidMobile = cleanMobile.length === 10;
 
-  // Voice & TTS State
+  // Voice & Neural Indian TTS State
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
 
   // Outputs
   const [rtiData, setRtiData] = useState<any>(null);
@@ -290,6 +292,7 @@ export default function JanSetuCivicPortal() {
   const [captchaImage, setCaptchaImage] = useState<string | null>(null);
   const [captchaInput, setCaptchaInput] = useState("");
   const [receiptId, setReceiptId] = useState<string | null>(null);
+  const [copiedBanner, setCopiedBanner] = useState(false);
   const [myPrivateFilings, setMyPrivateFilings] = useState<any[]>([]);
   const [publicPulseFilings, setPublicPulseFilings] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<"document" | "explainer" | "fact_audit" | "browser" | "private_vault" | "public_pulse">("document");
@@ -302,6 +305,17 @@ export default function JanSetuCivicPortal() {
 
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Helper with strict timeout so buttons NEVER spin forever on Render cold-starts
+  const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 18000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(id);
+    }
+  };
+
   const fetchPrivateVault = async (mobileNum: string) => {
     const cleaned = mobileNum.replace(/\D/g, "").slice(-10);
     if (cleaned.length < 10) {
@@ -309,7 +323,7 @@ export default function JanSetuCivicPortal() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/ledger?mobile=${encodeURIComponent(cleaned)}`);
+      const res = await fetchWithTimeout(`${API_BASE}/api/ledger?mobile=${encodeURIComponent(cleaned)}`, {}, 10000);
       if (res.ok) {
         const data = await res.json();
         setMyPrivateFilings(data.records || []);
@@ -321,12 +335,12 @@ export default function JanSetuCivicPortal() {
 
   const fetchPublicPulse = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/public-pulse`);
+      const res = await fetchWithTimeout(`${API_BASE}/api/public-pulse`, {}, 10000);
       if (res.ok) {
         const data = await res.json();
         setPublicPulseFilings(data.public_records || []);
       }
-    } catch { }
+    } catch {}
   };
 
   useEffect(() => {
@@ -337,21 +351,57 @@ export default function JanSetuCivicPortal() {
     fetchPublicPulse();
   }, []);
 
-  const speakText = (textToSpeak: string) => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
+  // Natural Indian Neural Speech via Backend (/api/tts)
+  const speakText = async (textToSpeak: string, targetLangCode?: LangCode) => {
     if (isSpeaking) {
+      if (audioPlayerRef.current) {
+        audioPlayerRef.current.pause();
+        audioPlayerRef.current = null;
+      }
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
       setIsSpeaking(false);
       return;
     }
-    const utterance = new SpeechSynthesisUtterance(textToSpeak);
-    const langObj = LANGUAGES.find((l) => l.code === lang);
-    utterance.lang = langObj?.ttsLang || "hi-IN";
-    utterance.rate = 0.95;
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+
     setIsSpeaking(true);
-    window.speechSynthesis.speak(utterance);
+    const voiceLang = targetLangCode || lang;
+
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/tts`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: textToSpeak, lang: voiceLang }),
+        },
+        15000
+      );
+      if (!res.ok) throw new Error("TTS failed");
+      const blob = await res.blob();
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      audioPlayerRef.current = audio;
+      audio.onended = () => {
+        setIsSpeaking(false);
+        URL.revokeObjectURL(audioUrl);
+      };
+      audio.onerror = () => setIsSpeaking(false);
+      await audio.play();
+    } catch {
+      setIsSpeaking(false);
+    }
+  };
+
+  // Clickable Live Portal Hand-off: Copies RTI Draft & Opens Official rtionline.gov.in
+  const openLiveRtiPortalManually = () => {
+    if (rtiData?.formal_draft && typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(rtiData.formal_draft);
+      setCopiedBanner(true);
+      setTimeout(() => setCopiedBanner(false), 4000);
+    }
+    window.open(OFFICIAL_RTI_PORTAL_URL, "_blank", "noopener,noreferrer");
   };
 
   const handleExplainPolicy = async () => {
@@ -359,7 +409,7 @@ export default function JanSetuCivicPortal() {
     setExplainingPolicy(true);
     setActiveTab("explainer");
     try {
-      const res = await fetch(`${API_BASE}/api/explain-policy`, {
+      const res = await fetchWithTimeout(`${API_BASE}/api/explain-policy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -369,10 +419,12 @@ export default function JanSetuCivicPortal() {
           bpl_status: citizenProfile.bpl,
         }),
       });
-      const data = await res.json();
-      setPolicyExplainer(data);
+      if (res.ok) {
+        const data = await res.json();
+        setPolicyExplainer(data);
+      }
     } catch {
-      addLog("Failed to generate policy explainer.", "error");
+      addLog("Policy explainer timed out. Please try again.", "error");
     } finally {
       setExplainingPolicy(false);
     }
@@ -382,7 +434,7 @@ export default function JanSetuCivicPortal() {
     if (!query.trim()) return;
     setIsTriaging(true);
     try {
-      const res = await fetch(`${API_BASE}/api/triage`, {
+      const res = await fetchWithTimeout(`${API_BASE}/api/triage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -391,10 +443,12 @@ export default function JanSetuCivicPortal() {
           lang: lang,
         }),
       });
-      const data = await res.json();
-      setTriageResult(data);
+      if (res.ok) {
+        const data = await res.json();
+        setTriageResult(data);
+      }
     } catch {
-      addLog("Civic severity triage failed.", "error");
+      addLog("Civic severity triage timed out. Please retry.", "error");
     } finally {
       setIsTriaging(false);
     }
@@ -412,14 +466,16 @@ export default function JanSetuCivicPortal() {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/api/fact-check`, {
+      const res = await fetchWithTimeout(`${API_BASE}/api/fact-check`, {
         method: "POST",
         body: formData,
       });
-      const data = await res.json();
-      setFactAuditResult(data);
+      if (res.ok) {
+        const data = await res.json();
+        setFactAuditResult(data);
+      }
     } catch {
-      addLog("Fact-check audit error.", "error");
+      addLog("Fact-check audit timed out.", "error");
     } finally {
       setAuditingFact(false);
     }
@@ -469,7 +525,7 @@ export default function JanSetuCivicPortal() {
         const formData = new FormData();
         formData.append("file", audioBlob, "grievance.webm");
         try {
-          const res = await fetch(`${API_BASE}/api/transcribe`, { method: "POST", body: formData });
+          const res = await fetchWithTimeout(`${API_BASE}/api/transcribe`, { method: "POST", body: formData });
           const data = await res.json();
           if (data.text) setQuery(data.text);
         } catch {
@@ -489,7 +545,7 @@ export default function JanSetuCivicPortal() {
     setGeneratingAppeal(true);
     setAppealDraft(null);
     try {
-      const res = await fetch(`${API_BASE}/api/appeal`, {
+      const res = await fetchWithTimeout(`${API_BASE}/api/appeal`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -562,6 +618,7 @@ export default function JanSetuCivicPortal() {
       if (status === "error") setIsRunning(false);
     };
     ws.onerror = () => { addLog("Backend connection failed.", "error"); setIsRunning(false); };
+    ws.onclose = () => { setIsRunning(false); };
   };
 
   const submitCaptcha = (e: React.FormEvent) => {
@@ -607,10 +664,11 @@ export default function JanSetuCivicPortal() {
                   key={l.code}
                   type="button"
                   onClick={() => setLang(l.code)}
-                  className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${lang === l.code
+                  className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
+                    lang === l.code
                       ? "bg-[#FF9933] text-slate-950 shadow-xs"
                       : "text-slate-200 hover:text-white"
-                    }`}
+                  }`}
                 >
                   {l.native}
                 </button>
@@ -641,11 +699,12 @@ export default function JanSetuCivicPortal() {
             {t.steps.map((s: any) => {
               const st = stepStatuses[s.id] || "idle";
               return (
-                <div key={s.id} className={`rounded-lg border px-3 py-2 transition-all ${st === "completed" ? "bg-[#EAF5EE] border-[#2E7D32] text-[#1B5E20]" :
-                    st === "running" ? "bg-[#FFF8E7] border-[#D97706] text-[#78350F] shadow-xs ring-2 ring-[#D97706]/20" :
-                      st === "awaiting_human" ? "bg-[#FEF2F2] border-[#DC2626] text-[#7F1D1D] ring-2 ring-red-400/30 animate-pulse" :
-                        "bg-[#F5F2EB] border-[#D5CFC2] text-[#64748B]"
-                  }`}>
+                <div key={s.id} className={`rounded-lg border px-3 py-2 transition-all ${
+                  st === "completed" ? "bg-[#EAF5EE] border-[#2E7D32] text-[#1B5E20]" :
+                  st === "running" ? "bg-[#FFF8E7] border-[#D97706] text-[#78350F] shadow-xs ring-2 ring-[#D97706]/20" :
+                  st === "awaiting_human" ? "bg-[#FEF2F2] border-[#DC2626] text-[#7F1D1D] ring-2 ring-red-400/30 animate-pulse" :
+                  "bg-[#F5F2EB] border-[#D5CFC2] text-[#64748B]"
+                }`}>
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold uppercase tracking-wider">STEP {s.step}</span>
                     {st === "completed" && <CheckCircle2 className="w-3.5 h-3.5 text-[#2E7D32]" />}
@@ -832,9 +891,17 @@ export default function JanSetuCivicPortal() {
             <div className="bg-[#FFF8E7] border-2 border-[#D97706] rounded-xl p-4 shadow-md print:hidden">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-xs font-bold text-[#78350F] flex items-center gap-1.5 uppercase tracking-wide"><Lock className="w-4 h-4 text-[#D97706]" /> Security Confirmation</span>
-                <span className="text-[10px] font-bold bg-[#FDE68A] text-[#78350F] px-2 py-0.5 rounded">Final Step</span>
+                <button
+                  type="button"
+                  onClick={openLiveRtiPortalManually}
+                  className="text-[11px] font-bold bg-[#0F2547] hover:bg-[#16325B] text-white px-2.5 py-1 rounded flex items-center gap-1 cursor-pointer"
+                >
+                  <ExternalLink className="w-3 h-3 text-[#FF9933]" /> Open rtionline.gov.in Manually
+                </button>
               </div>
-              <p className="text-xs text-[#92400E] mb-3">Your form is filled on <strong>rtionline.gov.in</strong>. Enter the CAPTCHA to submit:</p>
+              <p className="text-xs text-[#92400E] mb-3">
+                Your form is staged on <strong>rtionline.gov.in</strong>. Enter the CAPTCHA below or click the button above to open the portal directly:
+              </p>
               <div className="flex flex-col sm:flex-row items-center gap-3">
                 <div className="bg-white border border-[#D97706] rounded-lg p-1.5 flex items-center justify-center min-w-[160px]"><img src={captchaImage} alt="CAPTCHA" className="h-14 object-contain" /></div>
                 <form onSubmit={submitCaptcha} className="flex-1 flex gap-2 w-full">
@@ -842,6 +909,12 @@ export default function JanSetuCivicPortal() {
                   <button type="submit" className="bg-[#D97706] hover:bg-amber-700 text-white font-bold text-xs uppercase px-4 rounded-lg cursor-pointer">Submit</button>
                 </form>
               </div>
+            </div>
+          )}
+
+          {copiedBanner && (
+            <div className="bg-emerald-900 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center justify-between shadow">
+              <span>✓ RTI Legal Draft copied to clipboard! Paste it directly on rtionline.gov.in.</span>
             </div>
           )}
 
@@ -875,11 +948,13 @@ export default function JanSetuCivicPortal() {
                           <div className="text-[10px] font-bold uppercase text-[#475569] flex items-center gap-1"><Building2 className="w-3 h-3 text-[#D97706]" /> Authority</div>
                           <div className="text-xs font-bold text-[#0F2547] mt-0.5">{rtiData.department_predicted}</div>
                         </div>
-                        <div className="flex flex-wrap gap-1">
-                          {rtiData.statutory_sections?.map((sec: string, idx: number) => (
-                            <span key={idx} className="text-[10px] font-bold bg-[#0F2547] text-white px-2 py-0.5 rounded">{sec}</span>
-                          ))}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={openLiveRtiPortalManually}
+                          className="text-[11px] font-bold bg-[#138808] hover:bg-emerald-800 text-white px-2.5 py-1 rounded flex items-center gap-1 cursor-pointer"
+                        >
+                          <ExternalLink className="w-3 h-3" /> Copy Draft & Open rtionline.gov.in
+                        </button>
                       </div>
 
                       {rtiData.citizen_summary_hindi && (
@@ -890,7 +965,11 @@ export default function JanSetuCivicPortal() {
                               {LANGUAGES.find(l => l.code === lang)?.native} Summary
                             </button>
                           </div>
-                          <button type="button" onClick={() => speakText(docLang === "english" ? rtiData.formal_draft : rtiData.citizen_summary_hindi)} className="bg-[#D97706] hover:bg-amber-700 text-white px-2.5 py-1 rounded text-[11px] font-bold flex items-center gap-1 cursor-pointer">
+                          <button
+                            type="button"
+                            onClick={() => speakText(docLang === "english" ? rtiData.formal_draft : rtiData.citizen_summary_hindi, docLang === "english" ? "en" : lang)}
+                            className="bg-[#D97706] hover:bg-amber-700 text-white px-2.5 py-1 rounded text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          >
                             {isSpeaking ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
                             {isSpeaking ? t.stopVoiceBtn : t.listenBtn}
                           </button>
@@ -934,7 +1013,7 @@ export default function JanSetuCivicPortal() {
                           <div className="text-[10px] uppercase text-[#FF9933] font-bold">Multilingual Rights & Scheme Explainer ({LANGUAGES.find(l => l.code === lang)?.native})</div>
                           <div className="text-sm font-bold mt-0.5">{policyExplainer.scheme_or_law_title}</div>
                         </div>
-                        <button type="button" onClick={() => speakText(`${policyExplainer.plain_explainer}. ${(policyExplainer.exact_rights || []).join(". ")}`)} className="bg-[#FF9933] hover:bg-amber-400 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0">
+                        <button type="button" onClick={() => speakText(`${policyExplainer.plain_explainer}. ${(policyExplainer.exact_rights || []).join(". ")}`, lang)} className="bg-[#FF9933] hover:bg-amber-400 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0">
                           {isSpeaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                           {isSpeaking ? t.stopVoiceBtn : t.listenBtn}
                         </button>
@@ -1016,18 +1095,47 @@ export default function JanSetuCivicPortal() {
                 </div>
               )}
 
+              {/* TAB 4: CLICKABLE LIVE PORTAL VIEW */}
               {activeTab === "browser" && (
-                <div>
+                <div className="space-y-3">
+                  <div className="bg-[#0F2547] text-white p-3 rounded-lg flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-[10px] uppercase text-[#FF9933] font-bold">Direct Government Portal Hand-Off</div>
+                      <div className="text-xs font-semibold">Click below to open rtionline.gov.in in a new tab (auto-copies your legal draft)</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={openLiveRtiPortalManually}
+                      className="bg-[#FF9933] hover:bg-amber-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer shrink-0"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" /> Open rtionline.gov.in & Copy Draft
+                    </button>
+                  </div>
+
                   {!browserSnapshot ? (
-                    <div className="h-[440px] flex flex-col items-center justify-center text-center px-6 border-2 border-dashed border-[#D5CFC2] rounded-lg bg-[#F3EFE6]/60">
-                      <Eye className="w-10 h-10 text-[#94A3B8] mb-2.5" />
-                      <h3 className="text-sm font-bold text-[#0F2547]">Live Portal Snapshot</h3>
-                      <p className="text-xs text-[#475569] max-w-sm mt-1">Live execution pictures for your session will appear here.</p>
+                    <div
+                      onClick={openLiveRtiPortalManually}
+                      className="h-[380px] flex flex-col items-center justify-center text-center px-6 border-2 border-dashed border-[#D5CFC2] hover:border-[#0F2547] rounded-lg bg-[#F3EFE6]/60 cursor-pointer transition"
+                    >
+                      <Eye className="w-10 h-10 text-[#0F2547] mb-2.5" />
+                      <h3 className="text-sm font-bold text-[#0F2547]">Live Portal Snapshot (Click to Open rtionline.gov.in)</h3>
+                      <p className="text-xs text-[#475569] max-w-sm mt-1">
+                        Run the autonomous agent to see live DOM captures here, or click anywhere on this box to open <strong>rtionline.gov.in</strong> directly.
+                      </p>
                     </div>
                   ) : (
-                    <div className="space-y-2.5">
-                      <div className="flex justify-between bg-[#EFECE4] px-3 py-1.5 rounded text-xs font-bold text-[#0F2547]"><span>rtionline.gov.in Capture</span><span className="text-emerald-700">Live</span></div>
-                      <div className="border-2 border-[#C8C1B2] rounded-lg overflow-hidden shadow-sm"><img src={browserSnapshot} alt="Snapshot" className="w-full h-auto" /></div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center bg-[#EFECE4] px-3 py-1.5 rounded text-xs font-bold text-[#0F2547]">
+                        <span>rtionline.gov.in Live DOM Capture (Click Image to Open Portal)</span>
+                        <span className="text-emerald-700 flex items-center gap-1"><ExternalLink className="w-3 h-3" /> Interactive</span>
+                      </div>
+                      <div
+                        onClick={openLiveRtiPortalManually}
+                        title="Click to open rtionline.gov.in in a new tab and copy your RTI draft"
+                        className="border-2 border-[#0F2547] rounded-lg overflow-hidden shadow-sm cursor-pointer group relative"
+                      >
+                        <img src={browserSnapshot} alt="Snapshot" className="w-full h-auto group-hover:opacity-90 transition" />
+                      </div>
                     </div>
                   )}
                 </div>
