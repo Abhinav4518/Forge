@@ -644,7 +644,7 @@ async def agent_endpoint(websocket: WebSocket):
             captcha_code = human_data.get("captcha_code", "")
             await send_telemetry("node_5", "completed", "Security CAPTCHA verified by citizen.")
 
-            # STEP 6: Final Staging & Phone-Isolated Save
+      # STEP 6: Final Staging & Phone-Isolated Save
             await send_telemetry("node_6", "running", "Injecting CAPTCHA & sealing application...")
 
             cap_input = page.locator("#captchaInput, input[name*='captcha' i], input[id*='captcha' i], input[name*='code' i]").first
@@ -660,18 +660,10 @@ async def agent_endpoint(websocket: WebSocket):
 
             now_dt = datetime.now()
             sla_dt = now_dt + (timedelta(hours=48) if profile.get("life_liberty") else timedelta(days=30))
+            created_at_str = now_dt.strftime("%d %b %Y, %I:%M %p")
+            sla_str = sla_dt.strftime("%d %b %Y")
 
-            await send_telemetry(
-                "node_6",
-                "completed",
-                f"Saved to +91-{clean_mobile}'s Vault! Ref: {receipt_id}",
-                {
-                    "browser_snapshot": f"data:image/png;base64,{final_b64}",
-                    "receipt_id": receipt_id,
-                    "portal_url": "https://rtionline.gov.in/request/request.php"
-                }
-            )
-
+            # 1. COMMIT TO SQLITE FIRST SO /api/ledger IMMEDIATELY HAS THE RECORD!
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             c.execute("""
@@ -694,11 +686,43 @@ async def agent_endpoint(websocket: WebSocket):
                 severity_badge,
                 fee_status,
                 is_public,
-                now_dt.strftime("%d %b %Y, %I:%M %p"),
-                sla_dt.strftime("%d %b %Y")
+                created_at_str,
+                sla_str
             ))
+            new_row_id = c.lastrowid
             conn.commit()
             conn.close()
+
+            new_record = {
+                "id": new_row_id,
+                "receipt_id": receipt_id,
+                "applicant_name": profile.get("name"),
+                "applicant_mobile": clean_mobile,
+                "applicant_email": profile.get("email", "").strip().lower(),
+                "state": profile.get("state"),
+                "ministry": matched_ministry,
+                "grievance_summary": user_query[:180],
+                "formal_draft": clean_draft,
+                "execution_logs": "\n".join(session_logs),
+                "severity_score": severity_badge,
+                "status": fee_status,
+                "is_public": is_public,
+                "created_at": created_at_str,
+                "sla_deadline": sla_str,
+            }
+
+            # 2. NOW SEND TELEMETRY WITH THE SAVED RECORD INCLUDED
+            await send_telemetry(
+                "node_6",
+                "completed",
+                f"Saved to +91-{clean_mobile}'s Vault! Ref: {receipt_id}",
+                {
+                    "browser_snapshot": f"data:image/png;base64,{final_b64}",
+                    "receipt_id": receipt_id,
+                    "saved_record": new_record,
+                    "portal_url": "https://rtionline.gov.in/request/request.php"
+                }
+            )
 
             await browser.close()
 
